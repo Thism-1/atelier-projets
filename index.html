@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f8fc">
+<meta name="description" content="Atelier Projets : projets et notes synchronisés entre tes appareils.">
+<title>Atelier Projets · V3 pilote</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" type="image/png" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./styles.css">
+<script defer src="./config.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.48.1/dist/umd/supabase.min.js"></script>
+<script defer src="./app.js"></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-logo">A<span>·</span></div><div><strong>Atelier Projets</strong><small>V3 · pilote synchronisation</small></div></div>
+    <div class="side-group"><div class="side-label">ESPACE PERSONNEL</div><button class="nav active" id="nav-overview"><span class="nav-icon">▦</span> Vue d'ensemble</button><button class="nav" id="nav-save"><span class="nav-icon">⇩</span> Sauvegarde de test</button></div>
+    <div class="side-foot"><div class="tiny">Cette version sert à valider la synchronisation. Garde la V2 pour tes projets réels.</div><button class="theme-button" id="theme-toggle" type="button">◐ Changer de thème</button></div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div class="eyebrow">ATELIER / SYNCHRONISATION</div><div class="top-actions"><span class="sync-dot" id="sync-dot"></span><span class="sync-label" id="sync-label">Initialisation</span><button class="small-button hidden" id="logout">Déconnexion</button></div></header>
+    <div class="content">
+      <section id="setup" class="notice hidden"><h2>Configurer Supabase</h2><p>Ouvre <code>config.js</code> et remplace les deux valeurs de démonstration par ton Project URL et ta clé <strong>publishable</strong>. Ne publie jamais de clé secrète.</p></section>
+      <section id="auth-panel" class="auth-wrap hidden">
+        <div class="auth-card"><div class="eyebrow">CONNEXION SÉCURISÉE</div><h1>Retrouve tes projets, partout.</h1><p>Entre ton adresse e-mail. Un lien de connexion sera envoyé, sans mot de passe.</p>
+          <form id="login-form" class="stack"><label for="email">Adresse e-mail</label><input id="email" type="email" autocomplete="email" placeholder="nom@exemple.fr" required><button class="primary" type="submit">Recevoir mon lien de connexion</button></form>
+          <p class="hint">Ouvre le lien depuis le navigateur dans lequel tu souhaites utiliser l'application. Il faut une connexion Internet pour cette étape.</p>
+        </div>
+      </section>
+      <section id="app-panel" class="hidden">
+        <div class="hero"><div><div class="eyebrow">TABLEAU DE BORD</div><h1>Mes projets</h1><p>Un premier socle pour une synchronisation fiable entre ordinateur et téléphone.</p></div><button class="primary" id="new-project">+ Nouveau projet</button></div>
+        <div class="stats"><div class="stat"><small>Total projets</small><b id="stat-total">—</b></div><div class="stat"><small>En cours</small><b id="stat-active">— / 5</b></div><div class="stat"><small>Notes enregistrées</small><b id="stat-notes">—</b></div></div>
+        <div class="columns"><div class="projects-panel"><div class="section-head"><h2>Liste des projets</h2><button class="outline small-button" id="refresh">↻ Actualiser</button></div><div id="projects" class="project-list"><p class="empty">Chargement…</p></div></div>
+          <div class="detail-panel" id="project-detail"><div class="placeholder"><div class="empty-icon">✎</div><h2>Sélectionne un projet</h2><p>Tu pourras y écrire une note. Les ajouts seront synchronisés avec ton compte.</p></div></div>
+        </div>
+      </section>
+      <div id="toast" role="status" aria-live="polite" class="toast hidden"></div>
+    </div>
+  </main>
+</div>
+<dialog id="project-dialog"><form id="project-form" class="modal"><div class="modal-head"><div><div class="eyebrow">PROJET</div><h2>Créer un projet</h2></div><button type="button" class="close" id="close-dialog" aria-label="Fermer">×</button></div><label for="project-title">Nom du projet</label><input id="project-title" maxlength="160" required placeholder="Ex. : Banc d'essai mécanique"><label for="project-objective">Objectif</label><textarea id="project-objective" rows="3" placeholder="Résultat concret à atteindre"></textarea><label for="project-status">Statut</label><select id="project-status"><option value="idea">À venir</option><option value="planned">Planifié</option><option value="active">En cours</option><option value="paused">En pause</option></select><div class="modal-actions"><button class="outline" type="button" id="cancel-dialog">Annuler</button><button type="submit" class="primary" id="project-submit">Créer</button></div></form></dialog>
+</body>
+</html>

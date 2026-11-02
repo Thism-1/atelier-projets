@@ -1,15 +1,18 @@
-/* Atelier Projets V3.2 — authentification et sauvegardes non destructives. Aucune donnee de V2 migree. */
+/* Atelier Projets V3.3 — authentification et sauvegardes non destructives. Aucune donnee de V2 migree. */
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
   const cfg = window.ATELIER_CONFIG || {};
   const statuses = {idea:'À venir',planned:'Planifié',active:'En cours',paused:'En pause',completed:'Terminé',abandoned:'Abandonné'};
-  let db = null, user = null, projects = [], notes = [], stages = [], actionsData = [], selected = null, busy = false;
+  let db = null, user = null, projects = [], notes = [], stages = [], actionsData = [], documentsData = [], selected = null, busy = false;
   let lastFingerprint = '';
   let timer = null;
   let toastTimer = null;
   let pendingBackup = null;
   let restoreBusy = false;
+  let pendingZip = null;
+  const FILE_LIMIT=15*1024*1024;
+  const STORAGE_BUCKET='atelier-documents';
 
   const el = (tag, className, content) => {
     const node = document.createElement(tag);
@@ -100,18 +103,20 @@
     busy=true;
     if(force) syncState('Synchronisation…');
     try {
-      const [pr,no,st,ac] = await Promise.all([
+      const [pr,no,st,ac,doc] = await Promise.all([
         db.from('ap_projects').select('id,title,objective,status,interest,importance,created_at,updated_at').order('updated_at',{ascending:false}),
         db.from('ap_notes').select('id,project_id,content,created_at,updated_at').order('created_at',{ascending:false}),
         db.from('ap_stages').select('id,project_id,title,weight,sort_order,approved,created_at,updated_at').order('sort_order',{ascending:true}).order('created_at',{ascending:true}),
-        db.from('ap_actions').select('id,stage_id,title,weight,sort_order,completed,created_at,updated_at').order('sort_order',{ascending:true}).order('created_at',{ascending:true})
+        db.from('ap_actions').select('id,stage_id,title,weight,sort_order,completed,created_at,updated_at').order('sort_order',{ascending:true}).order('created_at',{ascending:true}),
+        db.from('ap_documents').select('id,project_id,file_name,storage_path,mime_type,file_size,created_at').order('created_at',{ascending:false})
       ]);
       if(pr.error) throw pr.error;
       if(no.error) throw no.error;
       if(st.error) throw st.error;
       if(ac.error) throw ac.error;
-      const fingerprint=JSON.stringify([pr.data,no.data,st.data,ac.data]);
-      projects=pr.data || []; notes=no.data || []; stages=st.data || []; actionsData=ac.data || [];
+      if(doc.error) throw doc.error;
+      const fingerprint=JSON.stringify([pr.data,no.data,st.data,ac.data,doc.data]);
+      projects=pr.data || []; notes=no.data || []; stages=st.data || []; actionsData=ac.data || []; documentsData=doc.data || [];
       if(fingerprint!==lastFingerprint || force) {lastFingerprint=fingerprint; render();}
       syncState('À jour · '+new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}),'ok');
     } catch(e){syncState('Erreur de synchronisation','fail'); if(force) notify('Lecture : '+safeErr(e),true);}
@@ -164,6 +169,8 @@
     area.append(el('hr','divider'));
     renderWorkflow(area,p);
     area.append(el('hr','divider'));
+    renderDocuments(area,p);
+    area.append(el('hr','divider'));
     area.append(el('h3','detail-heading','Notes du projet'));
     const form=el('form','note-compose');const text=el('textarea');text.required=true;text.maxLength=12000;text.placeholder='Une idée, une référence technique, un lien, une information à garder…';text.setAttribute('aria-label','Nouvelle note');
     const submit=el('button','primary','+ Ajouter une note');submit.type='submit';form.append(text,submit);
@@ -181,8 +188,70 @@
     area.append(form);
     const group=el('div','notes');const related=notes.filter(n=>n.project_id===p.id);
     if(!related.length)group.append(el('p','empty','Pas encore de note sur ce projet.'));
-    for(const n of related){const box=el('article','note');box.append(el('div','date',fmt(n.created_at)),el('p','note-content',n.content));group.append(box);}
+    for(const n of related){const box=el('article','note');box.append(el('div','date',fmt(n.created_at)),el('p','note-content',n.content));
+      const links=n.content.match(/https?:\/\/[^\s<>]+/g)||[];
+      for(const raw of links.slice(0,8)){try{const u=new URL(raw.replace(/[.,;!)]+$/,''));if(!['https:','http:'].includes(u.protocol))continue;const link=el('a','note-link','↗ '+u.hostname);link.href=u.href;link.target='_blank';link.rel='noopener noreferrer';box.append(link,el('span','',' '));}catch(_){}}
+      group.append(box);}
     area.append(group);
+  }
+  // Les fichiers restent dans un bucket privé ; aucune URL publique ou miniature persistante.
+  const docFields=['id','project_id','file_name','storage_path','mime_type','file_size','created_at'];
+  const toFileSize=b=>b<1024?b+' o':b<1048576?(b/1024).toFixed(0)+' Ko':(b/1048576).toFixed(1)+' Mo';
+  function renderDocuments(area,p){
+    const head=el('div','documents-head');head.append(el('h3','detail-heading','Documents et photos'),el('span','chip',documentsData.filter(d=>d.project_id===p.id).length+' fichier(s)'));
+    area.append(head);
+    area.append(el('p','inline-note','Fichiers privés, non chargés automatiquement sur le téléphone. Taille maximale : 15 Mo par fichier.'));
+    const form=el('form','upload-box');const input=el('input');input.type='file';input.multiple=true;input.setAttribute('aria-label','Fichiers à joindre');
+    const button=el('button','primary','+ Ajouter les fichiers');button.type='submit';const status=el('span','upload-state','');form.append(input,button,status);
+    form.addEventListener('submit',async e=>{
+      e.preventDefault();if(!navigator.onLine){notify('Connexion nécessaire pour joindre un document.',true);return;}
+      const files=Array.from(input.files||[]);if(!files.length)return;
+      button.disabled=true;let done=0;
+      for(const file of files){
+        try{if(!file.size||file.size>FILE_LIMIT)throw Error('Fichier vide ou supérieur à 15 Mo : '+file.name);
+          const id=crypto.randomUUID();const name=file.name.slice(0,240).replace(/[\/]/g,'_');
+          const path=`${user.id}/${p.id}/${id}/${name}`;
+          status.textContent=`Envoi ${done+1}/${files.length} : ${name}`;
+          const {error:uploadError}=await db.storage.from(STORAGE_BUCKET).upload(path,file,{upsert:false,contentType:file.type||'application/octet-stream',cacheControl:'3600'});
+          if(uploadError)throw uploadError;
+          const {error:metaError}=await db.from('ap_documents').insert({id,project_id:p.id,file_name:name,storage_path:path,mime_type:file.type||'application/octet-stream',file_size:file.size});
+          if(metaError){await db.storage.from(STORAGE_BUCKET).remove([path]);throw metaError;}
+          done++;
+        }catch(err){notify('Import interrompu : '+safeErr(err),true);break;}
+      }
+      if(done)notify(`${done} fichier(s) ajouté(s).`);
+      button.disabled=false;await refresh(true);
+    });
+    area.append(form);
+    const list=el('div','file-list');const found=documentsData.filter(d=>d.project_id===p.id);
+    if(!found.length)list.append(el('p','empty','Aucune pièce jointe.'));
+    for(const doc of found){
+      const row=el('div','file-item');const meta=el('div','file-meta');meta.append(el('strong','',doc.file_name),el('small','',`${toFileSize(doc.file_size)} · ${fmt(doc.created_at)}`));
+      const buttons=el('div','file-actions');const open=el('button','outline','Ouvrir');open.type='button';
+      open.addEventListener('click',()=>openDocument(doc,false,open));
+      const save=el('button','outline','Télécharger');save.type='button';save.addEventListener('click',()=>openDocument(doc,true,save));
+      const remove=el('button','outline','Supprimer');remove.type='button';remove.addEventListener('click',()=>deleteDocument(doc,remove));
+      buttons.append(open,save,remove);row.append(meta,buttons);list.append(row);
+    }
+    area.append(list);
+  }
+  async function openDocument(doc,download,button){
+    if(!navigator.onLine){notify('Internet nécessaire pour ouvrir ce document.',true);return;}
+    button.disabled=true;
+    try{const {data,error}=await db.storage.from(STORAGE_BUCKET).download(doc.storage_path);if(error)throw error;
+      const url=URL.createObjectURL(data);
+      if(download){const a=document.createElement('a');a.href=url;a.download=doc.file_name;document.body.append(a);a.click();a.remove();}
+      else{const tab=window.open(url,'_blank','noopener,noreferrer');if(!tab){const a=document.createElement('a');a.href=url;a.download=doc.file_name;a.click();notify('Ouverture bloquée : téléchargement proposé.');}}
+      setTimeout(()=>URL.revokeObjectURL(url),120000);
+    }catch(e){notify('Document : '+safeErr(e),true);}finally{button.disabled=false;}
+  }
+  async function deleteDocument(doc,button){
+    if(!confirm(`Supprimer définitivement « ${doc.file_name} » ? Cette opération retire le fichier du cloud et ne peut être annulée que via une ancienne sauvegarde ZIP.`))return;
+    button.disabled=true;
+    try{const {error}=await db.storage.from(STORAGE_BUCKET).remove([doc.storage_path]);if(error)throw error;
+      const {error:e}=await db.from('ap_documents').delete().eq('id',doc.id);if(e)throw e;
+      notify('Fichier supprimé.');await refresh(true);
+    }catch(e){notify('Suppression partielle possible : '+safeErr(e),true);}finally{button.disabled=false;}
   }
   function projectProgress(projectId){
     const current=stages.filter(s=>s.project_id===projectId);
@@ -320,6 +389,33 @@
     }catch(e){notify('Sauvegarde impossible : '+safeErr(e),true);}
     finally{button.disabled=false;await refresh(true);}
   }
+  function downloadBlob(blob,name){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
+  async function exportZip(){
+    if(!window.JSZip){notify('Bibliothèque ZIP indisponible : vérifie la connexion Internet.',true);return;}
+    if(!user||!navigator.onLine){notify('Connexion nécessaire pour sauvegarder les documents.',true);return;}
+    const button=$('backup-zip');button.disabled=true;
+    try{
+      const contents={};for(const [name,table,fields] of snapshotCollections)contents[name]=await fetchAll(table,fields);
+      const docs=await fetchAll('ap_documents',docFields);
+      if(docs.length>1500)throw Error('Trop de documents pour un seul export ZIP.');
+      const total=docs.reduce((sum,d)=>sum+d.file_size,0);
+      if(total>300*1024*1024)throw Error('Sauvegarde supérieure à 300 Mo : fractionnement nécessaire.');
+      const zip=new JSZip();
+      for(let i=0;i<docs.length;i++){
+        const d=docs[i];syncState(`Sauvegarde document ${i+1}/${docs.length}…`);
+        const {data,error}=await db.storage.from(STORAGE_BUCKET).download(d.storage_path);if(error)throw Error(d.file_name+' : '+error.message);
+        if(data.size!==d.file_size)throw Error('Taille incohérente : '+d.file_name);
+        zip.file('documents/'+d.id,data,{binary:true,compression:'STORE'});
+      }
+      const date=new Date().toISOString();
+      const snapshot={format:'atelier-projets-v3.3-zip',version:3,exported_at:date,source_user_id:user.id,contents:{...contents,documents:docs}};
+      zip.file('manifest.json',JSON.stringify(snapshot,null,2));
+      const output=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:4}});
+      downloadBlob(output,'Atelier_Projets_Complet_'+date.replace(/[:.]/g,'-')+'.zip');
+      try{localStorage.setItem('atelier_last_backup',date);}catch(_){ }
+      showBackupDate();notify('Archive ZIP créée : vérifie sa présence dans tes téléchargements.');
+    }catch(e){notify('Export ZIP incomplet, aucun fichier final livré : '+safeErr(e),true);}finally{button.disabled=false;await refresh(true);}
+  }
   function showBackupDate(){
     let value=null;try{value=localStorage.getItem('atelier_last_backup');}catch(_){}
     $('backup-last').textContent=value?'Dernier téléchargement demandé depuis ce navigateur : '+fmt(value)+' (présence du fichier non vérifiée).':'Aucune sauvegarde demandée depuis ce navigateur.';
@@ -352,18 +448,40 @@
     return data;
   }
   async function previewBackup(event){
-    pendingBackup=null;$('backup-restore').disabled=true;
+    pendingBackup=null;pendingZip=null;$('backup-restore').disabled=true;
     const box=$('backup-preview');clear(box);show('backup-preview',false);
     const file=event.target.files?.[0];if(!file)return;
     try{
-      if(file.size>25*1024*1024)throw Error('Fichier trop volumineux (25 Mo maximum).');
-      const parsed=JSON.parse(await file.text());
-      const data=validateBackup(parsed);
+      if(file.size>320*1024*1024)throw Error('Fichier trop volumineux (320 Mo maximum).');
+      pendingZip=null;
+      let parsed,zip=null;
+      if(file.name.toLowerCase().endsWith('.zip')){
+        if(!window.JSZip)throw Error('Bibliothèque ZIP indisponible.');
+        if(file.size>320*1024*1024)throw Error('Archive ZIP trop volumineuse (320 Mo maximum).');
+        zip=await JSZip.loadAsync(file,{checkCRC32:true});
+        const manifest=zip.file('manifest.json');if(!manifest)throw Error('manifest.json absent du ZIP.');
+        parsed=JSON.parse(await manifest.async('string'));
+        if(parsed.format!=='atelier-projets-v3.3-zip'||!Array.isArray(parsed.contents?.documents))throw Error('Archive ZIP V3.3 invalide.');
+      } else parsed=JSON.parse(await file.text());
+      const normalized=parsed.format==='atelier-projets-v3.3-zip'?{...parsed,format:'atelier-projets-v3.2'}:parsed;
+      const data=validateBackup(normalized);
+      if(zip){
+        const docs=parsed.contents.documents;
+        if(docs.length>1500)throw Error('Trop de documents dans l’archive.');
+        const ids=new Set(),pids=new Set(data.projects.map(p=>p.id));let total=0;
+        for(const d of docs){
+          if(!d||!uuid.test(d.id)||ids.has(d.id)||!pids.has(d.project_id)||!d.storage_path.startsWith(user.id+'/'+d.project_id+'/'+d.id+'/')||
+              typeof d.file_name!=='string'||d.file_name.length>240||!d.file_name.length||!Number.isSafeInteger(d.file_size)||d.file_size<0||d.file_size>FILE_LIMIT||!zip.file('documents/'+d.id))throw Error('Métadonnées ou document ZIP invalide.');
+          ids.add(d.id);total+=d.file_size;
+        }
+        if(total>300*1024*1024)throw Error('Documents trop volumineux.');
+        pendingZip={zip,docs};
+      }
       pendingBackup=data;
       box.append(el('strong','','Fichier vérifié : '+file.name));
       box.append(el('p','',`${data.projects.length} projets · ${data.notes.length} notes · ${data.stages.length} étapes · ${data.actions.length} actions`));
       box.append(el('p','','Import non destructif : seuls les identifiants absents seront ajoutés. Les projets déjà présents restent inchangés. Les projets actifs récupérés seront placés en « Planifié » pour respecter la limite de 5.'));
-      box.append(el('p','','Aucun document ni fichier joint dans cette sauvegarde.'));
+      box.append(el('p','',pendingZip?`${pendingZip.docs.length} document(s) inclus dans l’archive ZIP. Les originaux seront restaurés uniquement s’ils sont absents.`:'Aucun document joint dans cet export JSON.'));
       show('backup-preview',true);$('backup-restore').disabled=false;
     }catch(e){notify('Archive refusée : '+safeErr(e),true);}
   }
@@ -404,7 +522,25 @@
         // compromettre la restauration globale; laisser l’étape à vérifier.
         if(error)continue;
       }
-      notify(`Restauration terminée : ${counts.projects} projets, ${counts.notes} notes, ${counts.stages} étapes, ${counts.actions} actions examinés pour ajout.`);
+      let restoredDocuments=0;
+      if(pendingZip){
+        const existingIds=new Set((await fetchAll('ap_documents',['id'])).map(x=>x.id));
+        for(let i=0;i<pendingZip.docs.length;i++){
+          const d=pendingZip.docs[i];syncState(`Restauration document ${i+1}/${pendingZip.docs.length}…`);
+          const blob=await pendingZip.zip.file('documents/'+d.id).async('blob');
+          if(blob.size!==d.file_size)throw Error('Taille de document invalide : '+d.file_name);
+          const folder=d.storage_path.substring(0,d.storage_path.lastIndexOf('/'));
+          const baseName=d.storage_path.substring(d.storage_path.lastIndexOf('/')+1);
+          const {data:list,error:checkError}=await db.storage.from(STORAGE_BUCKET).list(folder,{limit:100});
+          if(checkError)throw checkError;
+          if(!list?.some(f=>f.name===baseName)){const {error:e}=await db.storage.from(STORAGE_BUCKET).upload(d.storage_path,blob,{contentType:d.mime_type,upsert:false});if(e)throw e;}
+          if(!existingIds.has(d.id)){
+            const {error}=await db.from('ap_documents').upsert({id:d.id,project_id:d.project_id,file_name:d.file_name,storage_path:d.storage_path,mime_type:d.mime_type,file_size:d.file_size},{onConflict:'id',ignoreDuplicates:true});
+            if(error)throw error;restoredDocuments++;
+          }
+        }
+      }
+      notify(`Restauration terminée : ${counts.projects} projets, ${counts.notes} notes, ${counts.stages} étapes, ${counts.actions} actions, ${restoredDocuments} documents ajoutés.`);
       await refresh(true);
       $('backup-dialog').close();
     }catch(e){notify('Restauration partielle possible. '+safeErr(e),true);await refresh(true);}
@@ -421,6 +557,7 @@
     $('backup-open').addEventListener('click',openBackup);
     $('backup-close').addEventListener('click',()=>$('backup-dialog').close());
     $('backup-export').addEventListener('click',exportSnapshot);
+    $('backup-zip').addEventListener('click',exportZip);
     $('backup-file').addEventListener('change',previewBackup);
     $('backup-restore').addEventListener('click',restoreBackup);
     $('logout').addEventListener('click',async()=>{if(db){await db.auth.signOut();renderAuth(null);notify('Déconnecté.');}});

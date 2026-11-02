@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#f5f8fc">
 <meta name="description" content="Atelier Projets : projets et notes synchronisés entre tes appareils.">
-<title>Atelier Projets · V3 pilote</title>
+<title>Atelier Projets · V3.1</title>
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" type="image/png" href="./icons/icon-192.png">
 <link rel="stylesheet" href="./styles.css">
@@ -16,9 +16,9 @@
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-logo">A<span>·</span></div><div><strong>Atelier Projets</strong><small>V3 · pilote synchronisation</small></div></div>
-    <div class="side-group"><div class="side-label">ESPACE PERSONNEL</div><button class="nav active" id="nav-overview"><span class="nav-icon">▦</span> Vue d'ensemble</button><button class="nav" id="nav-save"><span class="nav-icon">⇩</span> Sauvegarde de test</button></div>
-    <div class="side-foot"><div class="tiny">Cette version sert à valider la synchronisation. Garde la V2 pour tes projets réels.</div><button class="theme-button" id="theme-toggle" type="button">◐ Changer de thème</button></div>
+    <div class="brand"><div class="brand-logo">A<span>·</span></div><div><strong>Atelier Projets</strong><small>V3.1 · étapes et actions</small></div></div>
+    <div class="side-group"><div class="side-label">ESPACE PERSONNEL</div><button class="nav active" id="nav-overview"><span class="nav-icon">▦</span> Vue d'ensemble</button><button class="nav" id="nav-save"><span class="nav-icon">⇩</span> Export de test</button></div>
+    <div class="side-foot"><div class="tiny">Version pilote V3.1 : conserve la V2 et sa sauvegarde complète.</div><button class="theme-button" id="theme-toggle" type="button">◐ Changer de thème</button></div>
   </aside>
   <main class="main">
     <header class="topbar"><div class="eyebrow">ATELIER / SYNCHRONISATION</div><div class="top-actions"><span class="sync-dot" id="sync-dot"></span><span class="sync-label" id="sync-label">Initialisation</span><button class="small-button hidden" id="logout">Déconnexion</button></div></header>
@@ -31,7 +31,7 @@
         </div>
       </section>
       <section id="app-panel" class="hidden">
-        <div class="hero"><div><div class="eyebrow">TABLEAU DE BORD</div><h1>Mes projets</h1><p>Un premier socle pour une synchronisation fiable entre ordinateur et téléphone.</p></div><button class="primary" id="new-project">+ Nouveau projet</button></div>
+        <div class="hero"><div><div class="eyebrow">TABLEAU DE BORD</div><h1>Mes projets</h1><p>Projets, étapes et actions synchronisés entre ordinateur et téléphone.</p></div><button class="primary" id="new-project">+ Nouveau projet</button></div>
         <div class="stats"><div class="stat"><small>Total projets</small><b id="stat-total">—</b></div><div class="stat"><small>En cours</small><b id="stat-active">— / 5</b></div><div class="stat"><small>Notes enregistrées</small><b id="stat-notes">—</b></div></div>
         <div class="columns"><div class="projects-panel"><div class="section-head"><h2>Liste des projets</h2><button class="outline small-button" id="refresh">↻ Actualiser</button></div><div id="projects" class="project-list"><p class="empty">Chargement…</p></div></div>
           <div class="detail-panel" id="project-detail"><div class="placeholder"><div class="empty-icon">✎</div><h2>Sélectionne un projet</h2><p>Tu pourras y écrire une note. Les ajouts seront synchronisés avec ton compte.</p></div></div>

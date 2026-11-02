@@ -1,10 +1,10 @@
-/* Atelier Projets V3 — jalon pilote synchronisation. Aucune donnee de V2 migree. */
+/* Atelier Projets V3.1 — étapes et actions synchronisées. Aucune donnee de V2 migree. */
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
   const cfg = window.ATELIER_CONFIG || {};
   const statuses = {idea:'À venir',planned:'Planifié',active:'En cours',paused:'En pause',completed:'Terminé',abandoned:'Abandonné'};
-  let db = null, user = null, projects = [], notes = [], selected = null, busy = false;
+  let db = null, user = null, projects = [], notes = [], stages = [], actionsData = [], selected = null, busy = false;
   let lastFingerprint = '';
   let timer = null;
   let toastTimer = null;
@@ -52,7 +52,7 @@
     user = session?.user || null;
     show('auth-panel', !user); show('app-panel', !!user); show('logout', !!user);
     if (user) { syncState('Connexion active','ok'); startPolling(); refresh(true); }
-    else { stopPolling(); projects=[]; notes=[]; selected=null; syncState('Non connecté'); }
+    else { stopPolling(); projects=[]; notes=[]; stages=[]; actionsData=[]; selected=null; syncState('Non connecté'); }
   }
   async function login(event) {
     event.preventDefault();
@@ -73,14 +73,18 @@
     busy=true;
     if(force) syncState('Synchronisation…');
     try {
-      const [pr,no] = await Promise.all([
+      const [pr,no,st,ac] = await Promise.all([
         db.from('ap_projects').select('id,title,objective,status,interest,importance,created_at,updated_at').order('updated_at',{ascending:false}),
-        db.from('ap_notes').select('id,project_id,content,created_at,updated_at').order('created_at',{ascending:false})
+        db.from('ap_notes').select('id,project_id,content,created_at,updated_at').order('created_at',{ascending:false}),
+        db.from('ap_stages').select('id,project_id,title,weight,sort_order,approved,created_at,updated_at').order('sort_order',{ascending:true}).order('created_at',{ascending:true}),
+        db.from('ap_actions').select('id,stage_id,title,weight,sort_order,completed,created_at,updated_at').order('sort_order',{ascending:true}).order('created_at',{ascending:true})
       ]);
       if(pr.error) throw pr.error;
       if(no.error) throw no.error;
-      const fingerprint=JSON.stringify([pr.data,no.data]);
-      projects=pr.data || []; notes=no.data || [];
+      if(st.error) throw st.error;
+      if(ac.error) throw ac.error;
+      const fingerprint=JSON.stringify([pr.data,no.data,st.data,ac.data]);
+      projects=pr.data || []; notes=no.data || []; stages=st.data || []; actionsData=ac.data || [];
       if(fingerprint!==lastFingerprint || force) {lastFingerprint=fingerprint; render();}
       syncState('À jour · '+new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}),'ok');
     } catch(e){syncState('Erreur de synchronisation','fail'); if(force) notify('Lecture : '+safeErr(e),true);}
@@ -97,6 +101,8 @@
     for(const p of projects){
       const b=el('button','project'+(selected===p.id?' selected':'')); b.type='button';
       const info=el('span'); info.append(el('strong','',p.title),el('small','',p.objective.slice(0,88) || 'Objectif à compléter'));
+      const sm=projectProgress(p.id);
+      info.append(el('small','',sm.count ? `Avancement validé : ${sm.pct}% · ${sm.next || 'Étapes terminées'}` : 'Étapes à définir'));
       b.append(info,el('span','chip',statuses[p.status] || p.status));
       b.addEventListener('click',()=>{selected=p.id;render();}); container.append(b);
     }
@@ -129,6 +135,8 @@
     area.append(el('p','detail-objective',p.objective || 'Aucun objectif renseigné.'));
     area.append(el('div','inline-note','Données enregistrées dans ton compte Supabase.'));
     area.append(el('hr','divider'));
+    renderWorkflow(area,p);
+    area.append(el('hr','divider'));
     area.append(el('h3','detail-heading','Notes du projet'));
     const form=el('form','note-compose');const text=el('textarea');text.required=true;text.maxLength=12000;text.placeholder='Une idée, une référence technique, un lien, une information à garder…';text.setAttribute('aria-label','Nouvelle note');
     const submit=el('button','primary','+ Ajouter une note');submit.type='submit';form.append(text,submit);
@@ -149,6 +157,93 @@
     for(const n of related){const box=el('article','note');box.append(el('div','date',fmt(n.created_at)),el('p','note-content',n.content));group.append(box);}
     area.append(group);
   }
+  function projectProgress(projectId){
+    const current=stages.filter(s=>s.project_id===projectId);
+    const sum=current.reduce((n,s)=>n+s.weight,0);
+    const approved=current.reduce((n,s)=>n+(s.approved?s.weight:0),0);
+    let next='';
+    for(const stage of current){
+      if(stage.approved)continue;
+      const action=actionsData.find(a=>a.stage_id===stage.id && !a.completed);
+      next=action?`À faire : ${action.title}`:`À valider : ${stage.title}`;
+      break;
+    }
+    return {pct:sum?Math.round(approved*100/sum):0,count:current.length,next};
+  }
+  async function updateRow(table,id,data,success){
+    try{
+      if(!navigator.onLine)throw Error('Connexion nécessaire pour enregistrer cette modification.');
+      const {data:rows,error}=await db.from(table).update(data).eq('id',id).select('id');
+      if(error)throw error;
+      if(!rows?.length)throw Error('Modification refusée.');
+      if(success)notify(success);
+      await refresh(true);
+    }catch(e){notify(safeErr(e),true); await refresh(true);}
+  }
+  async function insertRow(table,data,done){
+    if(!navigator.onLine){notify('Connexion nécessaire pour ajouter cet élément.',true);return;}
+    try{
+      const {error}=await db.from(table).insert(data);
+      if(error)throw error;
+      done?.();await refresh(true);
+    }catch(e){notify(safeErr(e),true);}
+  }
+  function renderWorkflow(area,project){
+    const heading=el('div','workflow-heading');
+    const left=el('div');left.append(el('h3','detail-heading','Étapes et actions'));
+    const progress=projectProgress(project.id);
+    left.append(el('p','inline-note',progress.count?`${progress.pct}% validé · ${progress.count} étape(s)`:'Aucune étape pour ce projet.'));
+    heading.append(left);
+    area.append(heading);
+    if(progress.count){
+      const track=el('div','progress-track');const bar=el('div','progress-fill');bar.style.width=progress.pct+'%';track.append(bar);area.append(track);
+      area.append(el('p','next-action',progress.next||'Toutes les étapes sont validées.'));
+    }
+    const list=el('div','stage-list');
+    for(const stage of stages.filter(s=>s.project_id===project.id)){
+      const wrap=el('section','stage-card');
+      const top=el('div','stage-head');
+      const title=el('strong','',stage.title);top.append(title,el('span','chip',`Poids ${stage.weight}/5`));wrap.append(top);
+      const tasks=actionsData.filter(a=>a.stage_id===stage.id);
+      const actionList=el('div','action-list');
+      for(const action of tasks){
+        const row=el('label','action-item');
+        const cb=el('input');cb.type='checkbox';cb.checked=action.completed;
+        cb.addEventListener('change',()=>updateRow('ap_actions',action.id,{completed:cb.checked}));
+        row.append(cb,el('span',action.completed?'action-done':'',action.title),el('small','',`Poids ${action.weight}`));
+        actionList.append(row);
+      }
+      if(!tasks.length) actionList.append(el('p','empty','Aucune action pour cette étape.'));
+      wrap.append(actionList);
+      const toolrow=el('div','stage-tools');
+      const checkLabel=el('label','approved-toggle');
+      const approved=el('input'); approved.type='checkbox';approved.checked=stage.approved;
+      const allowed=tasks.length>0 && tasks.every(a=>a.completed);
+      approved.disabled=!allowed && !stage.approved;
+      approved.title=allowed?'Valider ou rouvrir cette étape':'Termine toutes les actions avant validation.';
+      approved.addEventListener('change',()=>updateRow('ap_stages',stage.id,{approved:approved.checked}));
+      checkLabel.append(approved,el('span','','Étape validée'));toolrow.append(checkLabel);
+      const addAction=el('button','small-button','+ Action');addAction.type='button';
+      addAction.addEventListener('click',()=>{
+        const title=window.prompt('Intitulé de la nouvelle action :');if(!title?.trim())return;
+        if(title.trim().length>220){notify('220 caractères maximum.',true);return;}
+        insertRow('ap_actions',{stage_id:stage.id,title:title.trim(),sort_order:tasks.length},()=>notify('Action créée.'));
+      });
+      toolrow.append(addAction);wrap.append(toolrow);list.append(wrap);
+    }
+    area.append(list);
+    const form=el('form','stage-form');
+    const input=el('input');input.placeholder='Nouvelle étape : ex. Préparation de la matière';input.required=true;input.maxLength=160;input.setAttribute('aria-label','Nouvelle étape');
+    const weight=el('select');weight.setAttribute('aria-label','Importance de l’étape');
+    for(let n=1;n<=5;n++){const opt=el('option','',`Poids ${n}`);opt.value=String(n);opt.selected=n===3;weight.append(opt);}
+    const button=el('button','outline small-button','+ Ajouter une étape');button.type='submit';
+    form.append(input,weight,button);
+    form.addEventListener('submit',async e=>{e.preventDefault();button.disabled=true;
+      await insertRow('ap_stages',{project_id:project.id,title:input.value.trim(),weight:Number(weight.value),sort_order:stages.filter(s=>s.project_id===project.id).length},()=>notify('Étape créée.'));
+      button.disabled=false;
+    });area.append(form);
+    area.append(el('p','inline-note','Une étape compte dans l’avancement uniquement après validation. Les actions peuvent être cochées au fur et à mesure.'));
+  }
   function openProjectDialog(){ $('project-form').reset(); $('project-dialog').showModal(); $('project-title').focus(); }
   async function createProject(event){
     event.preventDefault();
@@ -164,7 +259,7 @@
   }
   function exportSnapshot(){
     if(!user){notify('Connecte-toi pour exporter.',true);return;}
-    const snapshot={format:'atelier-v3-pilote-snapshot',version:1,exported_at:new Date().toISOString(),projects,notes};
+    const snapshot={format:'atelier-v3-1-pilote-snapshot',version:2,exported_at:new Date().toISOString(),projects,notes,stages,actions:actionsData};
     const url=URL.createObjectURL(new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'}));
     const a=document.createElement('a');a.href=url;a.download='Atelier_Projets_V3_test_'+new Date().toISOString().slice(0,10)+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);
     notify('Copie de lecture téléchargée (JSON). Ce n’est pas encore une sauvegarde ZIP restaurable.');

@@ -1,4 +1,4 @@
-/* Atelier Projets V3.1 — étapes et actions synchronisées. Aucune donnee de V2 migree. */
+/* Atelier Projets V3.2 — authentification et sauvegardes non destructives. Aucune donnee de V2 migree. */
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
@@ -8,6 +8,8 @@
   let lastFingerprint = '';
   let timer = null;
   let toastTimer = null;
+  let pendingBackup = null;
+  let restoreBusy = false;
 
   const el = (tag, className, content) => {
     const node = document.createElement(tag);
@@ -60,10 +62,35 @@
     button.disabled=true;
     try {
       const email=$('email').value.trim();
-      const {error}=await db.auth.signInWithOtp({email,options:{emailRedirectTo: location.origin+location.pathname}});
-      if (error) throw error;
-      notify('Lien envoyé. Vérifie ta boîte e-mail et ouvre le lien depuis ton appareil.');
+      const password=$('login-password').value;
+      const {error}=await db.auth.signInWithPassword({email,password});
+      if(error)throw error;
+      $('login-password').value='';
+      notify('Connexion réussie.');
     } catch(e) {notify('Connexion : '+safeErr(e),true);} finally {button.disabled=false;}
+  }
+  async function sendMagicLink(){
+    const email=$('email').value.trim();
+    if(!email || !$('email').checkValidity()){notify('Saisis une adresse e-mail valide.',true);return;}
+    $('magic-login').disabled=true;
+    try{
+      const {error}=await db.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname,shouldCreateUser:false}});
+      if(error)throw error;
+      notify('Lien envoyé. Attention au quota horaire de Supabase.');
+    }catch(e){notify('E-mail : '+safeErr(e),true);}
+    finally{$('magic-login').disabled=false;}
+  }
+  async function changePassword(event){
+    event.preventDefault();
+    const pass=$('new-password').value,confirm=$('confirm-password').value;
+    if(pass.length<12){notify('12 caractères minimum.',true);return;}
+    if(pass!==confirm){notify('Les mots de passe ne correspondent pas.',true);return;}
+    const button=event.submitter;button.disabled=true;
+    try{
+      const {error}=await db.auth.updateUser({password:pass});
+      if(error)throw error;
+      $('password-form').reset();$('account-dialog').close();notify('Mot de passe enregistré.');
+    }catch(e){notify('Mot de passe : '+safeErr(e),true);}finally{button.disabled=false;}
   }
   async function refresh(force=false) {
     if (!user || busy || !navigator.onLine) {
@@ -257,23 +284,152 @@
       selected=data.id; $('project-dialog').close();notify('Projet créé et synchronisé.');await refresh(true);
     }catch(e){notify('Projet non créé : '+safeErr(e),true);}finally{b.disabled=false;}
   }
-  function exportSnapshot(){
-    if(!user){notify('Connecte-toi pour exporter.',true);return;}
-    const snapshot={format:'atelier-v3-1-pilote-snapshot',version:2,exported_at:new Date().toISOString(),projects,notes,stages,actions:actionsData};
-    const url=URL.createObjectURL(new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'}));
-    const a=document.createElement('a');a.href=url;a.download='Atelier_Projets_V3_test_'+new Date().toISOString().slice(0,10)+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);
-    notify('Copie de lecture téléchargée (JSON). Ce n’est pas encore une sauvegarde ZIP restaurable.');
+  // Snapshot JSON: export explicite, sans pièces jointes, sans jetons de connexion.
+  const snapshotCollections = [
+    ['projects','ap_projects',['id','title','objective','status','interest','importance','created_at','updated_at']],
+    ['notes','ap_notes',['id','project_id','content','created_at','updated_at']],
+    ['stages','ap_stages',['id','project_id','title','weight','sort_order','approved','created_at','updated_at']],
+    ['actions','ap_actions',['id','stage_id','title','weight','sort_order','completed','created_at','updated_at']]
+  ];
+  async function fetchAll(table,fields){
+    let records=[];
+    // Supabase peut plafonner la taille des réponses; paginer plutôt que tronquer silencieusement.
+    for(let offset=0;offset<100000;offset+=500){
+      const {data,error}=await db.from(table).select(fields.join(',')).order('id').range(offset,offset+499);
+      if(error)throw error;
+      records.push(...data);
+      if(data.length<500)return records;
+    }
+    throw Error('Export trop volumineux : limite de sécurité atteinte.');
+  }
+  async function exportSnapshot(){
+    if(!user || !navigator.onLine){notify('Connexion nécessaire pour une sauvegarde complète.',true);return;}
+    const button=$('backup-export');button.disabled=true;
+    try{
+      syncState('Préparation de la sauvegarde…');
+      const contents={};
+      for(const [name,table,fields] of snapshotCollections) contents[name]=await fetchAll(table,fields);
+      const exportTime=new Date().toISOString();
+      const snapshot={format:'atelier-projets-v3.2',version:3,exported_at:exportTime,source_user_id:user.id,contents};
+      const json=JSON.stringify(snapshot,null,2);
+      const url=URL.createObjectURL(new Blob([json],{type:'application/json'}));
+      const a=document.createElement('a');a.href=url;a.download='Atelier_Projets_'+exportTime.replace(/[:.]/g,'-')+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+      try{localStorage.setItem('atelier_last_backup',exportTime);}catch(_){}
+      showBackupDate();
+      notify('Téléchargement demandé. Vérifie que le fichier existe sur ton PC.');
+    }catch(e){notify('Sauvegarde impossible : '+safeErr(e),true);}
+    finally{button.disabled=false;await refresh(true);}
+  }
+  function showBackupDate(){
+    let value=null;try{value=localStorage.getItem('atelier_last_backup');}catch(_){}
+    $('backup-last').textContent=value?'Dernier téléchargement demandé depuis ce navigateur : '+fmt(value)+' (présence du fichier non vérifiée).':'Aucune sauvegarde demandée depuis ce navigateur.';
+  }
+  const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const validDate=v=>typeof v==='string'&&!Number.isNaN(Date.parse(v));
+  function validateBackup(value){
+    if(!value||value.format!=='atelier-projets-v3.2'||value.version!==3||!value.contents)throw Error('Format non reconnu. Utilise une sauvegarde V3.2.');
+    if(value.source_user_id!==user.id)throw Error('Cette sauvegarde appartient à un autre compte. Import refusé.');
+    const {projects:pr,notes:no,stages:st,actions:ac}=value.contents;
+    if(![pr,no,st,ac].every(Array.isArray))throw Error('Sauvegarde incomplète.');
+    const limits={projects:2000,notes:30000,stages:30000,actions:100000};
+    const data={projects:pr,notes:no,stages:st,actions:ac};
+    for(const [key,rows] of Object.entries(data)){
+      if(rows.length>limits[key])throw Error('Le fichier dépasse les limites de sécurité.');
+      const seen=new Set();
+      for(const r of rows){
+        if(!r||!uuid.test(r.id)||seen.has(r.id))throw Error('Identifiant invalide ou dupliqué dans '+key);
+        seen.add(r.id);
+        if(!validDate(r.created_at))throw Error('Date invalide : '+key);
+      }
+    }
+    const projectIds=new Set(pr.map(r=>r.id)),stageIds=new Set(st.map(r=>r.id));
+    for(const r of pr){
+      if(typeof r.title!=='string'||!r.title.trim()||r.title.length>160||typeof r.objective!=='string'||!statuses[r.status]||![1,2,3,4,5].includes(r.interest)||![1,2,3,4,5].includes(r.importance))throw Error('Projet invalide.');
+    }
+    for(const r of no){if(!projectIds.has(r.project_id)||typeof r.content!=='string'||r.content.length>12000||!r.content.trim())throw Error('Note invalide ou projet manquant.');}
+    for(const r of st){if(!projectIds.has(r.project_id)||typeof r.title!=='string'||!r.title.trim()||r.title.length>160||!(r.weight>=1&&r.weight<=5)||typeof r.approved!=='boolean'||!Number.isInteger(r.sort_order))throw Error('Étape invalide.');}
+    for(const r of ac){if(!stageIds.has(r.stage_id)||typeof r.title!=='string'||!r.title.trim()||r.title.length>220||!(r.weight>=1&&r.weight<=5)||typeof r.completed!=='boolean'||!Number.isInteger(r.sort_order))throw Error('Action invalide.');}
+    return data;
+  }
+  async function previewBackup(event){
+    pendingBackup=null;$('backup-restore').disabled=true;
+    const box=$('backup-preview');clear(box);show('backup-preview',false);
+    const file=event.target.files?.[0];if(!file)return;
+    try{
+      if(file.size>25*1024*1024)throw Error('Fichier trop volumineux (25 Mo maximum).');
+      const parsed=JSON.parse(await file.text());
+      const data=validateBackup(parsed);
+      pendingBackup=data;
+      box.append(el('strong','','Fichier vérifié : '+file.name));
+      box.append(el('p','',`${data.projects.length} projets · ${data.notes.length} notes · ${data.stages.length} étapes · ${data.actions.length} actions`));
+      box.append(el('p','','Import non destructif : seuls les identifiants absents seront ajoutés. Les projets déjà présents restent inchangés. Les projets actifs récupérés seront placés en « Planifié » pour respecter la limite de 5.'));
+      box.append(el('p','','Aucun document ni fichier joint dans cette sauvegarde.'));
+      show('backup-preview',true);$('backup-restore').disabled=false;
+    }catch(e){notify('Archive refusée : '+safeErr(e),true);}
+  }
+  async function restoreBackup(){
+    if(!pendingBackup||restoreBusy||!user||!navigator.onLine){notify('Restauration impossible hors connexion.',true);return;}
+    if(!confirm('Ajouter uniquement les éléments manquants de cette sauvegarde à ton compte Supabase ? Aucune donnée existante ne sera écrasée.'))return;
+    restoreBusy=true;$('backup-restore').disabled=true;
+    const counts={projects:0,notes:0,stages:0,actions:0};
+    try{
+      syncState('Restauration en cours…');
+      // Retrouver les identifiants déjà présents. En cas de conflit concurrent,
+      // PostgREST ignoreDuplicates évite de modifier l'existant.
+      for(const [name,table,fields] of snapshotCollections){
+        const existing=new Set((await fetchAll(table,['id'])).map(x=>x.id));
+        const missing=pendingBackup[name].filter(row=>!existing.has(row.id));
+        // Ne jamais restaurer le propriétaire exporté ni forcer un avancement d'étape
+        // avant que toutes les actions aient été réinsérées.
+        for(let i=0;i<missing.length;i+=100){
+          const chunk=missing.slice(i,i+100).map(row=>{
+            const x={};for(const field of fields)if(field!=='updated_at'&&field!=='created_at')x[field]=row[field];
+            if(name==='projects'&&x.status==='active')x.status='planned';
+            if(name==='stages')x.approved=false;
+            return x;
+          });
+          const {error}=await db.from(table).upsert(chunk,{onConflict:'id',ignoreDuplicates:true});
+          if(error)throw new Error(name+' : '+error.message);
+          counts[name]+=chunk.length;
+        }
+      }
+      // Les validations rétablies uniquement si le serveur confirme que toutes
+      // les actions de l’étape sont déjà présentes et terminées.
+      for(const stage of pendingBackup.stages.filter(st=>st.approved)){
+        const original=stages.find(x=>x.id===stage.id);
+        // Ne modifier aucune etape qui existait deja avant l'import.
+        if(original)continue;
+        const {data,error}=await db.from('ap_stages').update({approved:true}).eq('id',stage.id).eq('approved',false).select('id');
+        // La validation peut échouer si la structure d’origine a changé: ne pas
+        // compromettre la restauration globale; laisser l’étape à vérifier.
+        if(error)continue;
+      }
+      notify(`Restauration terminée : ${counts.projects} projets, ${counts.notes} notes, ${counts.stages} étapes, ${counts.actions} actions examinés pour ajout.`);
+      await refresh(true);
+      $('backup-dialog').close();
+    }catch(e){notify('Restauration partielle possible. '+safeErr(e),true);await refresh(true);}
+    finally{restoreBusy=false;$('backup-restore').disabled=false;}
   }
   async function init(){
     initTheme();
     $('login-form').addEventListener('submit',login);
+    $('magic-login').addEventListener('click',sendMagicLink);
+    $('account-open').addEventListener('click',()=>{$('account-dialog').showModal();});
+    $('account-close').addEventListener('click',()=>$('account-dialog').close());
+    $('password-form').addEventListener('submit',changePassword);
+    const openBackup=()=>{showBackupDate();$('backup-dialog').showModal();};
+    $('backup-open').addEventListener('click',openBackup);
+    $('backup-close').addEventListener('click',()=>$('backup-dialog').close());
+    $('backup-export').addEventListener('click',exportSnapshot);
+    $('backup-file').addEventListener('change',previewBackup);
+    $('backup-restore').addEventListener('click',restoreBackup);
     $('logout').addEventListener('click',async()=>{if(db){await db.auth.signOut();renderAuth(null);notify('Déconnecté.');}});
     $('new-project').addEventListener('click',openProjectDialog);
     $('close-dialog').addEventListener('click',()=>$('project-dialog').close());
     $('cancel-dialog').addEventListener('click',()=>$('project-dialog').close());
     $('project-form').addEventListener('submit',createProject);
     $('refresh').addEventListener('click',()=>refresh(true));
-    $('nav-save').addEventListener('click',exportSnapshot);
+    $('nav-save').addEventListener('click',()=>{if(user)openBackup();else notify('Connecte-toi pour ouvrir les sauvegardes.',true);});
     window.addEventListener('online',()=>refresh(true));
     window.addEventListener('offline',()=>syncState('Hors ligne : lecture seule','fail'));
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(true);});

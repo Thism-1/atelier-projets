@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#f5f8fc">
 <meta name="description" content="Atelier Projets : projets et notes synchronisés entre tes appareils.">
-<title>Atelier Projets · V3.1</title>
+<title>Atelier Projets · V3.2</title>
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" type="image/png" href="./icons/icon-192.png">
 <link rel="stylesheet" href="./styles.css">
@@ -16,8 +16,8 @@
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-logo">A<span>·</span></div><div><strong>Atelier Projets</strong><small>V3.1 · étapes et actions</small></div></div>
-    <div class="side-group"><div class="side-label">ESPACE PERSONNEL</div><button class="nav active" id="nav-overview"><span class="nav-icon">▦</span> Vue d'ensemble</button><button class="nav" id="nav-save"><span class="nav-icon">⇩</span> Export de test</button></div>
+    <div class="brand"><div class="brand-logo">A<span>·</span></div><div><strong>Atelier Projets</strong><small>V3.2 · sécurité et sauvegardes</small></div></div>
+    <div class="side-group"><div class="side-label">ESPACE PERSONNEL</div><button class="nav active" id="nav-overview"><span class="nav-icon">▦</span> Vue d'ensemble</button><button class="nav" id="nav-save"><span class="nav-icon">⇩</span> Sauvegardes</button></div>
     <div class="side-foot"><div class="tiny">Version pilote V3.1 : conserve la V2 et sa sauvegarde complète.</div><button class="theme-button" id="theme-toggle" type="button">◐ Changer de thème</button></div>
   </aside>
   <main class="main">
@@ -25,14 +25,14 @@
     <div class="content">
       <section id="setup" class="notice hidden"><h2>Configurer Supabase</h2><p>Ouvre <code>config.js</code> et remplace les deux valeurs de démonstration par ton Project URL et ta clé <strong>publishable</strong>. Ne publie jamais de clé secrète.</p></section>
       <section id="auth-panel" class="auth-wrap hidden">
-        <div class="auth-card"><div class="eyebrow">CONNEXION SÉCURISÉE</div><h1>Retrouve tes projets, partout.</h1><p>Entre ton adresse e-mail. Un lien de connexion sera envoyé, sans mot de passe.</p>
-          <form id="login-form" class="stack"><label for="email">Adresse e-mail</label><input id="email" type="email" autocomplete="email" placeholder="nom@exemple.fr" required><button class="primary" type="submit">Recevoir mon lien de connexion</button></form>
-          <p class="hint">Ouvre le lien depuis le navigateur dans lequel tu souhaites utiliser l'application. Il faut une connexion Internet pour cette étape.</p>
+        <div class="auth-card"><div class="eyebrow">CONNEXION SÉCURISÉE</div><h1>Retrouve tes projets, partout.</h1><p>Connexion par mot de passe. Si ton compte utilisait un lien e-mail, connecte-toi une dernière fois avec ce lien puis définis ton mot de passe dans « Mon compte ».</p>
+          <form id="login-form" class="stack"><label for="email">Adresse e-mail</label><input id="email" type="email" autocomplete="email" placeholder="nom@exemple.fr" required><label for="login-password">Mot de passe</label><input id="login-password" type="password" autocomplete="current-password" minlength="8" required><button class="primary" type="submit">Se connecter</button></form><button id="magic-login" class="outline auth-alt" type="button">Recevoir exceptionnellement un lien par e-mail</button>
+          <p class="hint">Si tu n’as pas encore défini de mot de passe, utilise une seule fois la connexion par lien après le renouvellement du quota Supabase.</p>
         </div>
       </section>
       <section id="app-panel" class="hidden">
         <div class="hero"><div><div class="eyebrow">TABLEAU DE BORD</div><h1>Mes projets</h1><p>Projets, étapes et actions synchronisés entre ordinateur et téléphone.</p></div><button class="primary" id="new-project">+ Nouveau projet</button></div>
-        <div class="stats"><div class="stat"><small>Total projets</small><b id="stat-total">—</b></div><div class="stat"><small>En cours</small><b id="stat-active">— / 5</b></div><div class="stat"><small>Notes enregistrées</small><b id="stat-notes">—</b></div></div>
+        <div class="account-toolbar"><button type="button" class="outline small-button" id="account-open">⚙ Mon compte</button><button type="button" class="outline small-button" id="backup-open">⇩ Sauvegardes</button></div><div class="stats"><div class="stat"><small>Total projets</small><b id="stat-total">—</b></div><div class="stat"><small>En cours</small><b id="stat-active">— / 5</b></div><div class="stat"><small>Notes enregistrées</small><b id="stat-notes">—</b></div></div>
         <div class="columns"><div class="projects-panel"><div class="section-head"><h2>Liste des projets</h2><button class="outline small-button" id="refresh">↻ Actualiser</button></div><div id="projects" class="project-list"><p class="empty">Chargement…</p></div></div>
           <div class="detail-panel" id="project-detail"><div class="placeholder"><div class="empty-icon">✎</div><h2>Sélectionne un projet</h2><p>Tu pourras y écrire une note. Les ajouts seront synchronisés avec ton compte.</p></div></div>
         </div>
@@ -42,5 +42,7 @@
   </main>
 </div>
 <dialog id="project-dialog"><form id="project-form" class="modal"><div class="modal-head"><div><div class="eyebrow">PROJET</div><h2>Créer un projet</h2></div><button type="button" class="close" id="close-dialog" aria-label="Fermer">×</button></div><label for="project-title">Nom du projet</label><input id="project-title" maxlength="160" required placeholder="Ex. : Banc d'essai mécanique"><label for="project-objective">Objectif</label><textarea id="project-objective" rows="3" placeholder="Résultat concret à atteindre"></textarea><label for="project-status">Statut</label><select id="project-status"><option value="idea">À venir</option><option value="planned">Planifié</option><option value="active">En cours</option><option value="paused">En pause</option></select><div class="modal-actions"><button class="outline" type="button" id="cancel-dialog">Annuler</button><button type="submit" class="primary" id="project-submit">Créer</button></div></form></dialog>
+<dialog id="account-dialog"><div class="modal"><div class="modal-head"><div><div class="eyebrow">SÉCURITÉ</div><h2>Mon compte</h2></div><button type="button" class="close" id="account-close" aria-label="Fermer">×</button></div><p>Définis un mot de passe pour ne plus dépendre des liens de connexion par e-mail.</p><form id="password-form" class="stack"><label for="new-password">Nouveau mot de passe (12 caractères minimum)</label><input type="password" id="new-password" minlength="12" autocomplete="new-password" required><label for="confirm-password">Confirmer</label><input type="password" id="confirm-password" minlength="12" autocomplete="new-password" required><button type="submit" class="primary">Enregistrer mon mot de passe</button></form><p class="hint">Selon les réglages Supabase, une validation supplémentaire peut être demandée. Ne réutilise pas un mot de passe d’un autre site.</p></div></dialog>
+<dialog id="backup-dialog"><div class="modal backup-modal"><div class="modal-head"><div><div class="eyebrow">PROTECTION DES DONNÉES</div><h2>Sauvegarde et restauration</h2></div><button type="button" class="close" id="backup-close" aria-label="Fermer">×</button></div><p>Exporte une copie JSON de tes projets, notes, étapes et actions. Les fichiers joints ne sont pas encore pris en charge dans la V3.</p><button id="backup-export" class="primary" type="button">⇩ Télécharger une sauvegarde JSON</button><p id="backup-last" class="hint">Aucune sauvegarde enregistrée dans ce navigateur.</p><hr class="divider"><h3>Restaurer les éléments manquants</h3><p>Cette restauration n’écrase pas les enregistrements existants. Elle n’efface rien. Elle nécessite une connexion et peut ajouter des projets.</p><label for="backup-file">Sélectionner un fichier de sauvegarde V3.2</label><input id="backup-file" type="file" accept=".json,application/json"><div id="backup-preview" class="backup-preview hidden" aria-live="polite"></div><button id="backup-restore" type="button" class="outline" disabled>Restaurer les éléments manquants</button><p class="hint">Attention : une restauration interrompue peut être partielle. Le réimport d’un même fichier saute les éléments déjà présents. Vérifie le résultat après l’opération.</p></div></dialog>
 </body>
 </html>
